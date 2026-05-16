@@ -1,261 +1,470 @@
 """
-SQL Agent
-负责固定查询和动态 SQL 生成
+SQL Agent for deterministic ERP data queries.
+
+Fixed templates are used for high-frequency ERP questions. They return both
+machine-readable rows and a concise natural-language answer with key details.
 """
-from typing import Dict, Any, Optional
-from datetime import datetime
-import httpx
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any, Dict, List
+import re
 
 from app.core.config import settings
-from app.agents.guards.sql_guard import SQLGuard
+from app.guards.sql_guard import SQLGuard
 
 
 class SQLAgent:
-    """SQL Agent"""
-    
-    # 固定模板 SQL
+    """Execute fixed SQL templates and guarded dynamic SQL."""
+
     TEMPLATE_SQL = {
         "customer_list": """
-            SELECT id, name, contact, phone, level, created_at 
-            FROM customers 
-            WHERE is_active = 1 
-            ORDER BY created_at DESC 
+            SELECT
+                id,
+                customer_code,
+                customer_name,
+                contact_name,
+                owner_name,
+                credit_limit,
+                status,
+                created_at
+            FROM erp_customer
+            ORDER BY created_at DESC
             LIMIT {limit}
         """,
         "customer_detail": """
-            SELECT * FROM customers WHERE name LIKE '%{customer_name}%' AND is_active = 1
+            SELECT
+                id,
+                customer_code,
+                customer_name,
+                contact_name,
+                owner_name,
+                credit_limit,
+                status,
+                created_at
+            FROM erp_customer
+            WHERE customer_name LIKE '%{customer_name}%'
+            ORDER BY created_at DESC
+            LIMIT {limit}
         """,
         "customer_orders": """
-            SELECT o.*, c.name as customer_name 
-            FROM orders o 
-            LEFT JOIN customers c ON o.customer_id = c.id 
-            WHERE c.name LIKE '%{customer_name}%'
+            SELECT
+                id,
+                order_no,
+                customer_name,
+                owner_name,
+                amount,
+                status,
+                biz_date,
+                created_at
+            FROM sales_orders
+            WHERE customer_name LIKE '%{customer_name}%'
             {status_filter}
             {date_filter}
-            ORDER BY o.created_at DESC
+            ORDER BY created_at DESC
+            LIMIT {limit}
         """,
         "inventory_alert": """
-            SELECT i.*, p.name as product_name 
-            FROM inventory i 
-            LEFT JOIN products p ON i.product_id = p.id 
-            WHERE i.quantity <= i.min_stock_level
+            SELECT
+                id,
+                sku,
+                product_name,
+                warehouse_name,
+                on_hand_qty,
+                available_qty,
+                locked_qty,
+                status
+            FROM inventory_ledger
+            WHERE status = '低库存'
+            ORDER BY available_qty ASC
+            LIMIT {limit}
         """,
         "finance_records": """
-            SELECT f.*, c.name as customer_name 
-            FROM finance_records f 
-            LEFT JOIN customers c ON f.customer_id = c.id 
-            WHERE 1=1 
+            SELECT
+                id,
+                bill_no,
+                customer_name,
+                amount,
+                paid_amount,
+                status,
+                due_date,
+                created_at
+            FROM receivables
+            WHERE 1=1
             {type_filter}
             {date_filter}
-            ORDER BY f.record_date DESC
-        """
+            ORDER BY created_at DESC
+            LIMIT {limit}
+        """,
     }
-    
+
     def __init__(self):
         self.sql_guard = SQLGuard()
-    
+
     async def execute_fixed_query(
         self,
         template_id: str,
         params: Dict[str, Any],
-        permission: Dict[str, Any]
+        permission: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """执行固定模板查询"""
+        """Execute a trusted fixed SQL template."""
         if not template_id or template_id not in self.TEMPLATE_SQL:
             return {
                 "answer": "抱歉，暂不支持该查询类型。",
                 "sql": None,
-                "data": None
+                "data": None,
             }
-        
-        # 1. 获取 SQL 模板
-        sql_template = self.TEMPLATE_SQL[template_id]
-        
-        # 2. 构建 SQL
-        sql = self._build_template_sql(sql_template, params)
-        
-        # 3. SQL 安全校验
+
+        sql = self._build_template_sql(self.TEMPLATE_SQL[template_id], params)
         is_safe, error_msg = await self.sql_guard.validate(sql)
         if not is_safe:
             return {
-                "answer": f"查询被拦截: {error_msg}",
+                "answer": f"查询被拒绝: {error_msg}",
                 "sql": sql,
-                "data": None
+                "data": None,
             }
-        
-        # 4. 执行查询
+
         data = await self._execute_sql(sql)
-        
-        # 5. 构建回答
-        answer = self._format_data_answer(template_id, data)
-        
         return {
-            "answer": answer,
+            "answer": self._format_data_answer(template_id, data),
             "sql": sql,
             "data": data,
-            "intent": "fixed_query"
+            "intent": "fixed_query",
         }
-    
+
     async def execute_dynamic_query(
         self,
         query: str,
         params: Dict[str, Any],
-        permission: Dict[str, Any]
+        permission: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """执行动态 SQL 查询"""
-        # 调用 LLM 生成 SQL
-        from langchain.prompts import PromptTemplate
-        from langchain_openai import ChatOpenAI
-        from pydantic import BaseModel
-        from typing import List
-        
-        class SQLOutput(BaseModel):
-            sql: str
-            reasoning: str
-        
-        prompt = PromptTemplate.from_template("""
-你是一个 ERP SQL 生成专家。根据用户的问题生成 SQL 查询。
+        """Generate and execute dynamic SQL after guard validation."""
+        local_sql = self._generate_local_dynamic_sql(query, params)
+        if local_sql:
+            return await self._execute_guarded_sql(local_sql, "dynamic_query")
 
-已知表结构:
-- customers: id, name, contact, phone, level, department_id, created_at
-- orders: id, customer_id, order_no, amount, status, created_at
-- inventory: id, product_id, warehouse_id, quantity, min_stock_level
-- finance_records: id, customer_id, type, amount, record_date
+        if not settings.LLM_API_KEY:
+            return {
+                "answer": "当前问题没有命中可控动态 SQL 规则。请换一种更明确的说法，例如：查询最近 3 个客户、统计合作中客户数量、查询逾期应收。",
+                "sql": None,
+                "data": None,
+            }
+
+        from langchain_core.prompts import PromptTemplate
+        from langchain_openai import ChatOpenAI
+        import json
+        import re
+
+        prompt = PromptTemplate.from_template("""
+你是一个 ERP SQL 生成专家。根据用户问题生成只读 SQL。
+
+已知核心表:
+- erp_customer: id, customer_code, customer_name, contact_name, owner_name, credit_limit, status, created_at
+- inventory_ledger: sku, product_name, warehouse_name, on_hand_qty, available_qty, locked_qty, status
+- sales_orders: id, order_no, customer_name, owner_name, amount, status, biz_date, created_at
+- purchase_orders: id, order_no, supplier_name, owner_name, amount, status, biz_date, created_at
+- receivables: id, bill_no, customer_name, amount, paid_amount, status, due_date, created_at
+- payables: id, bill_no, supplier_name, amount, paid_amount, status, due_date, created_at
 
 用户问题: {query}
 
-注意:
+要求:
 1. 只允许 SELECT 查询
-2. 必须加上数据权限过滤 (department_id = {department_id})
-3. 使用标准 SQL
-4. 不要使用 DROP, DELETE, UPDATE, INSERT
-
-输出 JSON 格式:
-{{"sql": "SELECT ...", "reasoning": "..."}}
+2. 不允许 DROP、DELETE、UPDATE、INSERT、ALTER、CREATE
+3. 只允许访问上面列出的表和字段
+4. 必须包含 LIMIT，最大 LIMIT 100
+5. 输出 JSON: {{"sql": "SELECT ...", "reasoning": "..."}}
 """)
-        
-        llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
-        chain = prompt | llm
-        
+
+        llm = ChatOpenAI(
+            model=settings.LLM_MODEL,
+            temperature=0,
+            api_key=settings.LLM_API_KEY or None,
+            base_url=settings.LLM_BASE_URL,
+        )
+
         try:
-            response = await chain.ainvoke({
-                "query": query,
-                "department_id": params.get("data_scope", {}).get("department_id", 0)
-            })
-            
-            import json
-            import re
-            json_match = re.search(r'\{[^{}]*\}', response.content, re.DOTALL)
+            response = await (prompt | llm).ainvoke({"query": query})
+            json_match = re.search(r"\{[^{}]*\}", response.content, re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group())
                 sql = result.get("sql", "")
-                
-                # 校验 SQL
-                is_safe, error_msg = await self.sql_guard.validate(sql)
-                if not is_safe:
-                    return {
-                        "answer": f"查询被拦截: {error_msg}",
-                        "sql": sql,
-                        "data": None
-                    }
-                
-                # 执行查询
-                data = await self._execute_sql(sql)
-                answer = f"根据您的查询，共找到 {len(data.get('rows', []))} 条记录。"
-                
-                return {
-                    "answer": answer,
-                    "sql": sql,
-                    "data": data,
-                    "intent": "dynamic_query"
-                }
-        except Exception as e:
+                return await self._execute_guarded_sql(sql, "dynamic_query")
+        except Exception as exc:
             return {
-                "answer": f"查询处理失败: {str(e)}",
+                "answer": f"查询处理失败: {exc}",
                 "sql": None,
-                "data": None
+                "data": None,
             }
-        
+
         return {
             "answer": "抱歉，无法理解您的查询。",
             "sql": None,
-            "data": None
+            "data": None,
         }
-    
-    def _build_template_sql(self, template: str, params: Dict) -> str:
-        """构建模板 SQL"""
+
+    def _build_template_sql(self, template: str, params: Dict[str, Any]) -> str:
+        """Fill placeholders used by fixed SQL templates."""
         sql = template
-        
-        # 替换基础参数
-        sql = sql.replace("{customer_name}", params.get("customer_name", ""))
-        sql = sql.replace("{limit}", str(params.get("limit", 20)))
-        
-        # 状态过滤
+        sql = sql.replace("{customer_name}", self._escape_like(str(params.get("customer_name", ""))))
+        sql = sql.replace("{limit}", str(self._safe_limit(params.get("limit", 20))))
+
         status = params.get("status")
-        if status:
-            sql = sql.replace("{status_filter}", f"AND o.status = '{status}'")
-        else:
-            sql = sql.replace("{status_filter}", "")
-        
-        # 日期过滤
+        sql = sql.replace("{status_filter}", f"AND status = '{self._escape_literal(status)}'" if status else "")
+
         start_date = params.get("start_date")
         end_date = params.get("end_date")
         if start_date and end_date:
-            sql = sql.replace("{date_filter}", f"AND o.created_at BETWEEN '{start_date}' AND '{end_date}'")
+            sql = sql.replace("{date_filter}", f"AND created_at BETWEEN '{self._escape_literal(start_date)}' AND '{self._escape_literal(end_date)}'")
         else:
             sql = sql.replace("{date_filter}", "")
-        
-        # 类型过滤
+
         record_type = params.get("type")
-        if record_type:
-            sql = sql.replace("{type_filter}", f"AND f.type = '{record_type}'")
-        else:
-            sql = sql.replace("{type_filter}", "")
-        
+        sql = sql.replace("{type_filter}", f"AND status = '{self._escape_literal(record_type)}'" if record_type else "")
         return sql
-    
+
+    async def _execute_guarded_sql(self, sql: str, intent: str) -> Dict[str, Any]:
+        normalized_sql = self._normalize_limit(sql)
+        is_safe, error_msg = await self.sql_guard.validate(normalized_sql)
+        if not is_safe:
+            return {
+                "answer": f"查询被拒绝: {error_msg}",
+                "sql": normalized_sql,
+                "data": None,
+                "intent": intent,
+            }
+
+        data = await self._execute_sql(normalized_sql)
+        return {
+            "answer": self._format_data_answer(intent, data),
+            "sql": normalized_sql,
+            "data": data,
+            "intent": intent,
+        }
+
+    def _generate_local_dynamic_sql(self, query: str, params: Dict[str, Any]) -> str | None:
+        """Generate deterministic dynamic SQL for common ERP analysis questions."""
+        normalized = self._normalize_question(query)
+        limit = self._safe_limit(params.get("limit", 20))
+
+        if "客户" in normalized:
+            status = self._extract_status(normalized, ["合作中", "潜在", "停用"])
+            if any(word in normalized for word in ["多少", "几个", "数量", "统计", "count"]):
+                where = f"WHERE status = '{status}'" if status else ""
+                return f"SELECT COUNT(*) AS customer_count FROM erp_customer {where} LIMIT 1"
+            where = f"WHERE status = '{status}'" if status else "WHERE 1=1"
+            return f"""
+                SELECT id, customer_code, customer_name, contact_name, owner_name, credit_limit, status, created_at
+                FROM erp_customer
+                {where}
+                ORDER BY created_at DESC
+                LIMIT {limit}
+            """
+
+        if any(word in normalized for word in ["库存", "缺货", "低库存", "库存不足"]):
+            return f"""
+                SELECT id, sku, product_name, warehouse_name, on_hand_qty, available_qty, locked_qty, status
+                FROM inventory_ledger
+                WHERE status = '低库存' OR available_qty <= 0
+                ORDER BY available_qty ASC
+                LIMIT {limit}
+            """
+
+        if "订单" in normalized:
+            status = self._extract_status(normalized, ["待发货", "已审核", "已完成", "待入库"])
+            if "采购" in normalized:
+                where = f"WHERE status = '{status}'" if status else "WHERE 1=1"
+                return f"""
+                    SELECT id, order_no, supplier_name, owner_name, amount, status, biz_date, created_at
+                    FROM purchase_orders
+                    {where}
+                    ORDER BY created_at DESC
+                    LIMIT {limit}
+                """
+            where = f"WHERE status = '{status}'" if status else "WHERE 1=1"
+            customer = self._extract_named_value(normalized, "客户")
+            if customer:
+                where += f" AND customer_name LIKE '%{self._escape_like(customer)}%'"
+            return f"""
+                SELECT id, order_no, customer_name, owner_name, amount, status, biz_date, created_at
+                FROM sales_orders
+                {where}
+                ORDER BY created_at DESC
+                LIMIT {limit}
+            """
+
+        if "应收" in normalized or "欠款" in normalized:
+            where = "WHERE 1=1"
+            if "逾期" in normalized:
+                where += " AND status = '逾期'"
+            return f"""
+                SELECT id, bill_no, customer_name, amount, paid_amount, status, due_date, created_at
+                FROM receivables
+                {where}
+                ORDER BY due_date ASC
+                LIMIT {limit}
+            """
+
+        if "应付" in normalized:
+            where = "WHERE 1=1"
+            if "逾期" in normalized:
+                where += " AND status = '逾期'"
+            return f"""
+                SELECT id, bill_no, supplier_name, amount, paid_amount, status, due_date, created_at
+                FROM payables
+                {where}
+                ORDER BY due_date ASC
+                LIMIT {limit}
+            """
+
+        if "供应商" in normalized:
+            return f"""
+                SELECT id, supplier_code, supplier_name, category, settlement, lead_time, status, created_at
+                FROM erp_supplier
+                ORDER BY created_at DESC
+                LIMIT {limit}
+            """
+
+        return None
+
     async def _execute_sql(self, sql: str) -> Dict[str, Any]:
-        """执行 SQL 查询"""
+        """Execute SQL and normalize database values for JSON responses."""
         import pymysql
-        
+
+        connection = None
         try:
             connection = pymysql.connect(
                 host=settings.DB_HOST,
                 port=settings.DB_PORT,
                 user=settings.DB_USER,
                 password=settings.DB_PASSWORD,
-                database=settings.DB_NAME
+                database=settings.DB_NAME,
+                charset="utf8mb4",
             )
-            
             with connection.cursor(pymysql.cursors.DictCursor) as cursor:
                 cursor.execute(sql)
-                rows = cursor.fetchall()
-                
+                raw_rows = cursor.fetchall()
+                rows = [self._normalize_row(row) for row in raw_rows]
                 return {
                     "columns": list(rows[0].keys()) if rows else [],
                     "rows": rows,
-                    "count": len(rows)
+                    "count": len(rows),
                 }
-        except Exception as e:
-            return {"columns": [], "rows": [], "count": 0, "error": str(e)}
+        except Exception as exc:
+            return {"columns": [], "rows": [], "count": 0, "error": str(exc)}
         finally:
-            connection.close()
-    
-    def _format_data_answer(self, template_id: str, data: Dict) -> str:
-        """格式化数据回答"""
+            if connection:
+                connection.close()
+
+    def _format_data_answer(self, template_id: str, data: Dict[str, Any]) -> str:
+        """Format a concise answer; tabular details are rendered by the frontend."""
         rows = data.get("rows", [])
         count = len(rows)
-        
         if count == 0:
-            return "没有找到相关数据。"
-        
-        if template_id == "customer_list":
-            return f"共找到 {count} 个客户。"
-        elif template_id == "customer_orders":
-            return f"共找到 {count} 条订单记录。"
-        elif template_id == "inventory_alert":
-            return f"共发现 {count} 个库存不足的商品。"
-        elif template_id == "finance_records":
-            return f"共找到 {count} 条财务记录。"
-        
-        return f"共找到 {count} 条记录。"
+            error = data.get("error")
+            return f"没有找到相关数据。{error}" if error else "没有找到相关数据。"
+
+        if template_id in {"customer_list", "customer_detail"}:
+            return f"共找到 {count} 个客户，明细如下。"
+        if template_id == "inventory_alert":
+            return f"共发现 {count} 个库存不足的商品，明细如下。"
+        if template_id == "customer_orders":
+            return f"共找到 {count} 条订单记录，明细如下。"
+        if template_id == "finance_records":
+            return f"共找到 {count} 条财务记录，明细如下。"
+
+        return f"共找到 {count} 条记录，明细如下。"
+
+    @staticmethod
+    def _normalize_question(query: str) -> str:
+        return (query or "").translate(str.maketrans({
+            "詢": "询",
+            "戶": "户",
+            "庫": "库",
+            "貨": "货",
+            "訂": "订",
+            "單": "单",
+            "應": "应",
+            "財": "财",
+            "務": "务",
+        }))
+
+    @staticmethod
+    def _extract_status(query: str, statuses: List[str]) -> str | None:
+        for status in statuses:
+            if status in query:
+                return status
+        return None
+
+    @staticmethod
+    def _extract_named_value(query: str, prefix: str) -> str | None:
+        match = re.search(prefix + r"([\u4e00-\u9fa5A-Za-z0-9（）()有限公司集团科技制造贸易]{2,40})", query)
+        if not match:
+            return None
+        value = match.group(1)
+        value = re.split(r"(的|有|是|状态|订单|列表)", value)[0]
+        return value.strip() or None
+
+    @staticmethod
+    def _escape_literal(value: Any) -> str:
+        return str(value).replace("\\", "\\\\").replace("'", "''")
+
+    @classmethod
+    def _escape_like(cls, value: Any) -> str:
+        return cls._escape_literal(value).replace("%", "\\%").replace("_", "\\_")
+
+    @staticmethod
+    def _safe_limit(value: Any) -> int:
+        try:
+            return max(1, min(int(value), 100))
+        except (TypeError, ValueError):
+            return 20
+
+    @classmethod
+    def _normalize_limit(cls, sql: str) -> str:
+        stripped = sql.strip().rstrip(";")
+        match = re.search(r"\bLIMIT\s+(\d+)\b", stripped, re.IGNORECASE)
+        if not match:
+            return f"{stripped} LIMIT 20"
+        limit = cls._safe_limit(match.group(1))
+        return re.sub(r"\bLIMIT\s+\d+\b", f"LIMIT {limit}", stripped, flags=re.IGNORECASE)
+
+    def _format_customer_rows(self, rows: List[Dict[str, Any]], count: int) -> str:
+        lines = [f"共找到 {count} 个客户："]
+        for index, row in enumerate(rows[:10], start=1):
+            name = row.get("customer_name", "-")
+            code = row.get("customer_code", "-")
+            contact = row.get("contact_name") or "-"
+            owner = row.get("owner_name") or "-"
+            status = row.get("status") or "-"
+            lines.append(f"{index}. {name}（编码：{code}，联系人：{contact}，负责人：{owner}，状态：{status}）")
+        return "\n".join(lines)
+
+    def _format_inventory_rows(self, rows: List[Dict[str, Any]], count: int) -> str:
+        lines = [f"共发现 {count} 个库存不足的商品："]
+        for index, row in enumerate(rows[:10], start=1):
+            lines.append(
+                f"{index}. {row.get('product_name', '-')}（SKU：{row.get('sku', '-')}，"
+                f"仓库：{row.get('warehouse_name', '-')}，可用：{row.get('available_qty', '-')}）"
+            )
+        return "\n".join(lines)
+
+    def _format_generic_rows(self, rows: List[Dict[str, Any]]) -> str:
+        lines = []
+        for index, row in enumerate(rows[:10], start=1):
+            values = [f"{key}={value}" for key, value in row.items()]
+            lines.append(f"{index}. " + "，".join(values))
+        return "\n".join(lines)
+
+    @classmethod
+    def _normalize_row(cls, row: Dict[str, Any]) -> Dict[str, Any]:
+        return {key: cls._normalize_value(value) for key, value in row.items()}
+
+    @staticmethod
+    def _normalize_value(value: Any) -> Any:
+        if isinstance(value, Decimal):
+            return float(value)
+        if isinstance(value, datetime):
+            return value.strftime("%Y-%m-%d %H:%M:%S")
+        if isinstance(value, date):
+            return value.strftime("%Y-%m-%d")
+        return value

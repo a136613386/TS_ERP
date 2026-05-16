@@ -1,8 +1,11 @@
 """
 知识库管理 API
 """
+import base64
+import hashlib
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 import os
 import uuid
@@ -14,7 +17,18 @@ from app.models.user import User
 router = APIRouter()
 
 # 文档上传临时目录
+# 这是 Python backend 早期的知识库上传临时目录。
+# 当前前端实际走 Java 后端上传，Java 再调用 agent_service /rag/index-document 做索引。
+# 保留这个接口主要用于兼容和调试，不作为主链路。
 UPLOAD_DIR = "/tmp/knowledge_uploads"
+
+
+class DocumentUploadRequest(BaseModel):
+    """文档上传请求，使用 JSON 以避免依赖 python-multipart"""
+
+    filename: str = Field(..., min_length=1)
+    content_base64: str = Field(..., min_length=1)
+    content_type: str = "application/octet-stream"
 
 
 @router.get("/bases")
@@ -59,13 +73,15 @@ def create_knowledge_base(
 @router.post("/documents/{base_id}")
 async def upload_document(
     base_id: int,
-    file: UploadFile = File(...),
+    payload: DocumentUploadRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """上传文档"""
+    # 旧版 Python 网关上传入口：接收 base64 文件内容，保存文件和元数据。
+    # 注意：这里目前只把文档状态置为 pending，没有真正写入 ES。
+    # 新主链路请看 Java 后端：/api/knowledge/documents/upload -> Agent /rag/index-document。
     from app.models.knowledge import KnowledgeBase as KnowledgeBaseModel, Document as DocumentModel
-    import hashlib
     
     # 验证知识库存在
     base = db.query(KnowledgeBaseModel).filter(KnowledgeBaseModel.id == base_id).first()
@@ -75,9 +91,13 @@ async def upload_document(
     # 保存文件
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     file_id = str(uuid.uuid4())
-    file_path = os.path.join(UPLOAD_DIR, f"{file_id}_{file.filename}")
+    file_path = os.path.join(UPLOAD_DIR, f"{file_id}_{payload.filename}")
     
-    content = await file.read()
+    try:
+        content = base64.b64decode(payload.content_base64)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid base64 content") from exc
+
     with open(file_path, "wb") as f:
         f.write(content)
     
@@ -87,9 +107,9 @@ async def upload_document(
     # 创建文档记录
     doc = DocumentModel(
         base_id=base_id,
-        title=file.filename,
+        title=payload.filename,
         file_path=file_path,
-        file_type=file.content_type,
+        file_type=payload.content_type,
         file_hash=file_hash,
         file_size=len(content),
         uploaded_by=current_user.id,
@@ -100,6 +120,8 @@ async def upload_document(
     db.refresh(doc)
     
     # TODO: 触发异步索引任务
+    # 如果未来恢复 Python backend 上传主链路，需要在这里补异步任务：
+    # 读取文件正文 -> 调用 agent_service /rag/index-document -> 写 chunk/状态。
     # worker.enqueue("index_document", doc.id)
     
     return {
@@ -138,6 +160,8 @@ def search_knowledge(
     current_user: User = Depends(get_current_user)
 ):
     """知识检索"""
+    # 知识库搜索仍然可以经由 Python backend 转发到 Agent。
+    # 它只做检索，不等同于上传索引；上传索引由 /rag/index-document 负责。
     from app.core.config import settings
     import httpx
     

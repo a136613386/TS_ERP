@@ -50,8 +50,7 @@ services:
     restart: unless-stopped
     environment:
       - discovery.type=single-node
-      - xpack.security.enabled=true
-      - ELASTIC_PASSWORD=${ES_PASSWORD:-elastic_password}
+      - xpack.security.enabled=false
       - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
     ports:
       - "9200:9200"
@@ -71,8 +70,6 @@ services:
     restart: unless-stopped
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
-      - ELASTICSEARCH_USERNAME=kibana_system
-      - ELASTICSEARCH_PASSWORD=${ES_PASSWORD:-elastic_password}
     ports:
       - "5601:5601"
     depends_on:
@@ -98,10 +95,9 @@ services:
       - REDIS_PORT=6379
       - ES_HOST=elasticsearch
       - ES_PORT=9200
-      - ES_USER=elastic
-      - ES_PASSWORD=${ES_PASSWORD:-elastic_password}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change_this_secret_key}
       - AGENT_SERVICE_URL=http://agent_service:8001
+      - JAVA_BACKEND_URL=http://host.docker.internal:8080
     depends_on:
       mysql:
         condition: service_healthy
@@ -133,9 +129,10 @@ services:
       - REDIS_PORT=6379
       - ES_HOST=elasticsearch
       - ES_PORT=9200
-      - ES_USER=elastic
-      - ES_PASSWORD=${ES_PASSWORD:-elastic_password}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-deepseek-chat}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.deepseek.com/v1}
+      - JAVA_BACKEND_URL=http://host.docker.internal:8080
     depends_on:
       mysql:
         condition: service_healthy
@@ -147,21 +144,9 @@ services:
       - ./agent_service:/app
       - /app/__pycache__
 
-  # 前端 (开发模式使用 Vite Dev Server)
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: ts_erp_frontend
-    restart: unless-stopped
-    ports:
-      - "5173:5173"
-    environment:
-      - VITE_API_BASE_URL=http://localhost:8000
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-      - /app/dist
+  # Java 后端 (需要单独启动)
+  # Java 后端项目路径: D:\xuweiqun\py_project\TS_ERP_JAVA
+  # 启动方式: cd TS_ERP_JAVA && mvn spring-boot:run -Dspring-boot.run.profiles=local
 
 volumes:
   mysql_data:

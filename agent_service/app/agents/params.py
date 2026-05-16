@@ -1,160 +1,214 @@
 """
-参数提取模块
-从用户查询中提取关键参数
-"""
-from typing import Dict, Any, Optional, List
-from datetime import datetime, timedelta
+Parameter extraction for the ERP assistant.
 
-from app.memory.session import SessionMemory
+Natural language should be normalized before template matching. For example,
+"查詢最近的3个客戶" and "查询最近的3个客户" should route the same way.
+"""
+from datetime import datetime, timedelta
+from typing import Any, Dict, Optional
+import re
 
 
 class ParameterExtractor:
-    """参数提取器"""
-    
-    # 固定模板定义
+    """Extract template IDs and lightweight entities from user questions."""
+
+    TRADITIONAL_TRANSLATION = str.maketrans({
+        "詢": "询",
+        "戶": "户",
+        "個": "个",
+        "門": "门",
+        "庫": "库",
+        "貨": "货",
+        "財": "财",
+        "務": "务",
+        "訂": "订",
+        "單": "单",
+        "資": "资",
+        "訊": "讯",
+        "狀": "状",
+        "態": "态",
+        "聯": "联",
+        "繫": "系",
+        "總": "总",
+        "額": "额",
+        "數": "数",
+        "據": "据",
+        "統": "统",
+        "計": "计",
+        "檢": "检",
+        "視": "视",
+    })
+
     TEMPLATES = {
         "customer_list": {
-            "keywords": ["客户列表", "所有客户", "查看客户"],
+            "keywords": [
+                "客户有哪些",
+                "有哪些客户",
+                "客户列表",
+                "所有客户",
+                "查看客户",
+                "查询客户",
+                "客户信息",
+            ],
             "required_params": [],
-            "optional_params": ["page", "page_size"]
+            "optional_params": ["page", "page_size"],
         },
         "customer_detail": {
-            "keywords": ["客户详情", "客户信息", "客户信息"],
+            "keywords": ["客户详情", "客户资料"],
             "required_params": ["customer_name"],
-            "optional_params": []
+            "optional_params": [],
         },
         "customer_orders": {
-            "keywords": ["客户订单", "某客户订单"],
+            "keywords": ["客户订单", "客户的订单"],
             "required_params": ["customer_name"],
-            "optional_params": ["status", "start_date", "end_date"]
+            "optional_params": ["status", "start_date", "end_date"],
         },
         "order_detail": {
             "keywords": ["订单详情", "订单信息"],
             "required_params": ["order_id"],
-            "optional_params": []
+            "optional_params": [],
         },
         "inventory_list": {
-            "keywords": ["库存列表", "所有库存", "查看库存"],
+            "keywords": ["库存列表", "所有库存", "查看库存", "查询库存"],
             "required_params": [],
-            "optional_params": ["warehouse"]
+            "optional_params": ["warehouse"],
         },
         "inventory_alert": {
-            "keywords": ["库存不足", "库存预警", "缺货"],
+            "keywords": ["库存不足", "库存预警", "缺货", "低库存"],
             "required_params": [],
-            "optional_params": []
+            "optional_params": [],
         },
         "finance_records": {
             "keywords": ["财务记录", "收款", "付款"],
             "required_params": ["type"],
-            "optional_params": ["customer_name", "start_date", "end_date"]
-        }
+            "optional_params": ["customer_name", "start_date", "end_date"],
+        },
     }
-    
-    async def extract(
-        self,
-        query: str,
-        intent: str,
-        session_id: str
-    ) -> Dict[str, Any]:
-        """
-        提取查询参数
-        """
-        params = {
+
+    LIST_QUESTION_WORDS = ["有哪些", "有那些", "列表", "所有", "全部", "查看", "查询", "最近", "最新", "前"]
+
+    async def extract(self, query: str, intent: str, session_id: str) -> Dict[str, Any]:
+        """Extract parameters from one user query."""
+        normalized_query = self._normalize_query(query)
+        params: Dict[str, Any] = {
             "query": query,
-            "intent": intent
+            "normalized_query": normalized_query,
+            "intent": intent,
         }
-        
-        # 1. 识别模板
-        template_id = self._match_template(query)
+
+        template_id = self._match_template(normalized_query)
         params["template_id"] = template_id
-        
-        # 2. 提取时间参数
-        params.update(self._extract_time_params(query))
-        
-        # 3. 提取实体参数
-        params.update(self._extract_entities(query))
-        
-        # 4. 检查是否需要追问
-        needs_clarification = self._check_needs_clarification(params, intent)
-        if needs_clarification:
+        params.update(self._extract_time_params(normalized_query))
+        params.update(self._extract_limit_params(normalized_query))
+        params.update(self._extract_entities(normalized_query, template_id))
+
+        if self._check_needs_clarification(params, intent):
             params["needs_clarification"] = True
             params["clarification_message"] = self._generate_clarification_message(params)
-        
+
         return params
-    
-    def _match_template(self, query: str) -> Optional[str]:
-        """匹配固定模板"""
-        query_lower = query.lower()
-        
+
+    def _match_template(self, normalized_query: str) -> Optional[str]:
+        """Match high-frequency templates with deterministic rules."""
+        clean_query = self._clean_query(normalized_query)
+
+        if "客户" in clean_query and any(word in clean_query for word in self.LIST_QUESTION_WORDS):
+            return "customer_list"
+        if "库存" in clean_query and any(word in clean_query for word in ["不足", "预警", "缺货", "低库存"]):
+            return "inventory_alert"
+
         for template_id, template in self.TEMPLATES.items():
             for keyword in template["keywords"]:
-                if keyword in query_lower:
+                if keyword in clean_query:
                     return template_id
-        
+
         return None
-    
+
     def _extract_time_params(self, query: str) -> Dict[str, Any]:
-        """提取时间参数"""
-        params = {}
-        query_lower = query.lower()
-        
-        # 今天
+        """Extract simple date ranges."""
+        params: Dict[str, Any] = {}
+
         if "今天" in query:
-            params["start_date"] = datetime.now().strftime("%Y-%m-%d")
-            params["end_date"] = datetime.now().strftime("%Y-%m-%d")
-        
-        # 本月
+            today = datetime.now().strftime("%Y-%m-%d")
+            params["start_date"] = today
+            params["end_date"] = today
+
         if "本月" in query:
             today = datetime.now()
             params["start_date"] = today.replace(day=1).strftime("%Y-%m-%d")
             params["end_date"] = today.strftime("%Y-%m-%d")
-        
-        # 最近 N 天
-        import re
-        match = re.search(r"最近(\d+)天", query)
+
+        match = re.search(r"最近的?(\d+)天", query)
         if match:
             days = int(match.group(1))
             end_date = datetime.now()
             start_date = end_date - timedelta(days=days)
             params["start_date"] = start_date.strftime("%Y-%m-%d")
             params["end_date"] = end_date.strftime("%Y-%m-%d")
-        
+
         return params
-    
-    def _extract_entities(self, query: str) -> Dict[str, Any]:
-        """提取实体参数"""
-        params = {}
-        
-        # 简单提取客户名（实际应该用 NER）
-        # 这里用简单的关键词匹配
-        import re
-        
-        # 提取"客户XXX"
-        customer_match = re.search(r"客户[^\s,，]+", query)
-        if customer_match:
-            customer_name = customer_match.group().replace("客户", "")
-            params["customer_name"] = customer_name
-        
-        # 提取订单ID
-        order_match = re.search(r"订单[^\s,，#]+", query)
+
+    def _extract_limit_params(self, query: str) -> Dict[str, Any]:
+        """Extract result count from phrases like 最近的3个客户."""
+        match = re.search(r"(?:最近|前|最新)?的?\s*(\d+)\s*(?:个|条|笔)", query)
+        if not match:
+            return {}
+        limit = max(1, min(int(match.group(1)), 100))
+        return {"limit": limit}
+
+    def _extract_entities(self, query: str, template_id: Optional[str]) -> Dict[str, Any]:
+        """Extract entities only when the matched template needs them."""
+        params: Dict[str, Any] = {}
+
+        if template_id in {"customer_detail", "customer_orders"}:
+            customer_name = self._extract_customer_name(query)
+            if customer_name:
+                params["customer_name"] = customer_name
+
+        order_match = re.search(r"订单\s*#?([A-Za-z0-9_-]+)", query)
         if order_match:
-            order_id = order_match.group().replace("订单", "").replace("#", "")
-            params["order_id"] = order_id
-        
+            params["order_id"] = order_match.group(1)
+
         return params
-    
-    def _check_needs_clarification(self, params: Dict, intent: str) -> bool:
-        """检查是否需要追问"""
+
+    def _extract_customer_name(self, query: str) -> Optional[str]:
+        """Extract a customer name without treating list questions as names."""
+        clean_query = self._clean_query(query)
+        if any(word in clean_query for word in self.LIST_QUESTION_WORDS):
+            return None
+
+        patterns = [
+            r"客户(.+?)的订单",
+            r"客户(.+?)详情",
+            r"客户(.+?)资料",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, clean_query)
+            if match:
+                value = match.group(1).strip()
+                return value or None
+        return None
+
+    def _check_needs_clarification(self, params: Dict[str, Any], intent: str) -> bool:
+        """Check whether required params are missing."""
         if intent == "fixed_query" and params.get("template_id"):
             template = self.TEMPLATES.get(params["template_id"])
             if template:
-                for required in template.get("required_params", []):
-                    if required not in params:
-                        return True
+                return any(required not in params for required in template.get("required_params", []))
         return False
-    
-    def _generate_clarification_message(self, params: Dict) -> str:
-        """生成追问消息"""
+
+    def _generate_clarification_message(self, params: Dict[str, Any]) -> str:
+        """Generate a short clarification question."""
         if params.get("template_id") == "customer_orders":
             return "请问您想查看哪个客户的订单？"
+        if params.get("template_id") == "customer_detail":
+            return "请问您想查看哪个客户的详情？"
         return "请提供更多信息以便我为您查询。"
+
+    @classmethod
+    def _normalize_query(cls, query: str) -> str:
+        return query.translate(cls.TRADITIONAL_TRANSLATION)
+
+    @staticmethod
+    def _clean_query(query: str) -> str:
+        return re.sub(r"[\s?？。!！,，；;]", "", query)

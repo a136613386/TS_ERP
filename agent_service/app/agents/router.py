@@ -4,8 +4,8 @@
 """
 from typing import Dict, Any, Optional
 
-from app.agents.guards.permission_guard import PermissionGuard
-from app.agents.guards.sql_guard import SQLGuard
+from app.guards.permission_guard import PermissionGuard
+from app.guards.sql_guard import SQLGuard
 
 
 class QueryRouter:
@@ -27,6 +27,8 @@ class QueryRouter:
               permission_denied / need_clarification
         """
         # 1. 权限检查
+        # 路由器是安全边界之一：先判断是否需要追问，再检查模块权限，
+        # 最后才允许进入 SQL/RAG 执行阶段，避免越权查询。
         if params.get("needs_clarification"):
             return "need_clarification"
         

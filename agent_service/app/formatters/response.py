@@ -16,13 +16,15 @@ class ResponseFormatter:
         citations = result.get("citations")
         data = result.get("data")
         intent = result.get("intent", "unknown")
+        meta = result.get("meta") or {}
         
         return {
             "answer": answer,
             "sql": sql,
             "citations": citations or [],
             "data": data,
-            "intent": intent
+            "intent": intent,
+            "meta": meta,
         }
     
     def format_table(self, data: Dict[str, Any]) -> str:

@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir *)",
+      "Bash(file *)",
+      "Bash(pip install *)",
+      "Bash(conda run *)",
+      "Bash(uvicorn *)",
+      "Bash(docker-compose *)",
+      "PowerShell(Get-Content *)",
+      "PowerShell(Get-ChildItem *)",
+      "PowerShell(Write-Output *)",
+      "PowerShell(Get-Process *)",
+      "PowerShell(Start-Sleep *)"
+    ]
+  }
+}

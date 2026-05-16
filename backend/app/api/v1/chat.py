@@ -47,6 +47,8 @@ async def chat_query(
     自然语言查询入口
     统一处理：固定查询、动态查询、RAG问答、混合查询
     """
+    # Python backend 在三项目架构里是 API 网关角色：
+    # 它负责鉴权和会话，真正的自然语言理解交给 agent_service 的 /agent/query。
     from app.core.config import settings
     import httpx
     import json
@@ -55,6 +57,7 @@ async def chat_query(
     session_id = request.session_id or f"session_{current_user.id}_{int(__import__('time').time())}"
     
     # 准备请求 Agent Service
+    # 这些字段是 Agent 做权限、数据范围和上下文记忆的最小输入。
     agent_payload = {
         "query": request.message,
         "user_id": current_user.id,
@@ -69,11 +72,14 @@ async def chat_query(
                 f"{settings.AGENT_SERVICE_URL}/agent/query",
                 json=agent_payload
             )
+            response.raise_for_status()
             result = response.json()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Agent service error: {str(e)}")
     
     # 记录聊天历史
+    # 聊天历史只保存展示所需的 user/assistant 消息；
+    # Agent 内部还会保存一份更偏执行上下文的 session memory。
     redis_client = get_redis_client()
     chat_history_key = f"chat:history:{session_id}"
     

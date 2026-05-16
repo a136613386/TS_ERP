@@ -3,7 +3,7 @@ Agent 协调器
 负责协调各 Agent 模块完成查询处理
 """
 from typing import Dict, Any, Optional
-import json
+import logging
 
 from app.agents.intent import IntentRecognizer
 from app.agents.params import ParameterExtractor
@@ -11,7 +11,7 @@ from app.agents.router import QueryRouter
 from app.agents.sql_agent import SQLAgent
 from app.agents.rag_agent import RAGAgent
 from app.agents.mixed_agent import MixedAgent
-from app.agents.formatters.response import ResponseFormatter
+from app.formatters.response import ResponseFormatter
 from app.memory.session import SessionMemory
 from app.permissions.context import PermissionContext
 
@@ -38,34 +38,79 @@ class AgentCoordinator:
         department_id: Optional[int],
         session_id: str
     ) -> Dict[str, Any]:
+        logger = logging.getLogger(__name__)
+        # /agent/query 的主流程只做编排，不把 SQL、RAG、权限等逻辑混在入口层。
+        # 这样 Java 后端无论问业务数据、知识库，还是混合问题，都只需要调用一个接口。
+
         """
         处理用户查询的核心流程
         """
+        # 0. 读取会话上下文，用于低信息追问和上下文改写。
+        history = await self.session_memory.get_context(session_id)
+        follow_up_result = self._resolve_follow_up(query, history)
+        if follow_up_result:
+            formatted = await self.response_formatter.format(follow_up_result)
+            await self.session_memory.save_context(
+                session_id=session_id,
+                query=query,
+                intent=formatted.get("intent", "follow_up"),
+                result=formatted,
+            )
+            return formatted
+
         # 1. 意图识别
         intent_result = await self.intent_recognizer.recognize(query)
         intent = intent_result["intent"]
+        rewritten_query = intent_result.get("rewrite_query") or query
+
+        if intent_result.get("confidence", 1.0) < 0.5:
+            result = {
+                "answer": "我还不能确定你想查业务数据还是问制度流程。可以补充一下对象或范围吗？例如：查询最近客户，或 库存不足怎么办。",
+                "intent": "clarification",
+                "sql": None,
+                "citations": [],
+                "data": None,
+                "meta": {"intent_result": intent_result},
+            }
+            formatted = await self.response_formatter.format(result)
+            await self.session_memory.save_context(session_id, query, "clarification", formatted)
+            return formatted
         
         # 2. 获取用户权限上下文
         permission = await self.permission_context.get_user_permission(
             user_id=user_id,
             department_id=department_id
         )
-        
+
+        logger.info("agent permission context user_id=%s department_id=%s", user_id, department_id)
+
         # 3. 参数提取
         params = await self.param_extractor.extract(
-            query=query,
+            query=rewritten_query,
             intent=intent,
             session_id=session_id
         )
-        
+        params["original_query"] = query
+        params["intent_result"] = intent_result
+        params["user_id"] = user_id
+        params["department_id"] = department_id
+        logger.info("agent params intent=%s route_query=%s params=%s", intent, rewritten_query, params)
+
+        if intent == "fixed_query" and not params.get("template_id"):
+            intent = "dynamic_query"
+            params["intent"] = intent
+            logger.info("fixed template not matched, fallback to dynamic_query")
+
         # 4. 查询路由
         route = await self.query_router.route(
             intent=intent,
             params=params,
             permission=permission
         )
-        
+        logger.info("agent route=%s", route)
         # 5. 根据路由执行不同处理
+        # route 的值决定真正执行哪类 Agent：
+        # fixed/dynamic 走业务数据，rag 走知识库，mixed 同时查业务数据和知识库。
         result = {}
         
         if route == "fixed_query":
@@ -79,7 +124,7 @@ class AgentCoordinator:
         elif route == "dynamic_query":
             # 动态 SQL 查询
             result = await self.sql_agent.execute_dynamic_query(
-                query=query,
+                query=rewritten_query,
                 params=params,
                 permission=permission
             )
@@ -87,7 +132,7 @@ class AgentCoordinator:
         elif route == "rag_query":
             # RAG 知识问答
             result = await self.rag_agent.answer(
-                query=query,
+                query=rewritten_query,
                 params=params,
                 permission=permission
             )
@@ -95,7 +140,7 @@ class AgentCoordinator:
         elif route == "mixed_query":
             # 混合查询
             result = await self.mixed_agent.answer(
-                query=query,
+                query=rewritten_query,
                 params=params,
                 permission=permission
             )
@@ -131,7 +176,8 @@ class AgentCoordinator:
         
         # 6. 格式化响应
         formatted = await self.response_formatter.format(result)
-        
+        logger.info("agent response intent=%s answer_preview=%s", formatted.get("intent"), formatted.get("answer", "")[:80])
+
         # 7. 保存上下文
         await self.session_memory.save_context(
             session_id=session_id,
@@ -141,3 +187,39 @@ class AgentCoordinator:
         )
         
         return formatted
+
+    def _resolve_follow_up(self, query: str, history: list) -> Optional[Dict[str, Any]]:
+        """Resolve short follow-up questions from the previous turn."""
+        clean_query = "".join((query or "").split()).strip("？?。!！")
+        if clean_query not in {"具体是哪一个", "具体是哪几个", "是哪一个", "是哪几个", "明细", "详情", "展开"}:
+            return None
+        if not history:
+            return {
+                "answer": "可以的，不过我需要知道你想追问哪一次查询。请把对象说完整一点。",
+                "intent": "clarification",
+                "sql": None,
+                "citations": [],
+                "data": None,
+            }
+
+        previous = history[-1].get("result") or {}
+        data = previous.get("data")
+        if isinstance(data, dict) and data.get("rows"):
+            return {
+                "answer": "这是上一轮查询的具体明细。",
+                "intent": "follow_up",
+                "sql": previous.get("sql"),
+                "citations": previous.get("citations") or [],
+                "data": data,
+            }
+
+        citations = previous.get("citations") or []
+        if citations:
+            return {
+                "answer": "这是上一轮知识库回答引用到的来源。",
+                "intent": "follow_up",
+                "sql": None,
+                "citations": citations,
+                "data": {"chunks": citations},
+            }
+        return None

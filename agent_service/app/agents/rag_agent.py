@@ -1,20 +1,20 @@
 """
-RAG Agent
-负责知识库问答
+RAG Agent for knowledge-base question answering.
 """
-from typing import Dict, Any, List
-from langchain.prompts import PromptTemplate
+from typing import Any, Dict, List
+
+from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
 
+from app.core.config import settings
 from app.rag.retriever import RAGRetriever
 
 
 class RAGAgent:
-    """RAG Agent"""
-    
-    # RAG 回答 Prompt
+    """Answer questions with retrieved knowledge chunks."""
+
     ANSWER_PROMPT = """
-你是一个 ERP 知识库助手，请根据检索到的知识片段回答用户的问题。
+你是一个 ERP 知识库助手，请严格根据检索到的知识片段回答用户问题。
 
 用户问题: {query}
 
@@ -22,94 +22,116 @@ class RAGAgent:
 {context}
 
 回答要求:
-1. 基于提供的知识片段回答，不要编造答案
-2. 如果没有找到相关信息，请明确告知用户
-3. 引用知识来源
-
-输出格式:
-答案: ...
-来源: ...
+1. 只能基于知识片段回答，不要编造。
+2. 如果知识片段不足以回答，请明确说明。
+3. 给出来源标题。
 """
-    
+
     def __init__(self):
         self.retriever = RAGRetriever()
-        self.llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0.3)
-    
+        self.llm = None
+
+    def _get_llm(self) -> ChatOpenAI:
+        if self.llm is None:
+            self.llm = ChatOpenAI(
+                model=settings.LLM_MODEL,
+                temperature=settings.LLM_TEMPERATURE,
+                api_key=settings.LLM_API_KEY or None,
+                base_url=settings.LLM_BASE_URL,
+            )
+        return self.llm
+
     async def answer(
         self,
         query: str,
         params: Dict[str, Any],
-        permission: Dict[str, Any]
+        permission: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """
-        RAG 知识问答
-        """
-        # 1. 检索相关知识
+        """Retrieve knowledge chunks and generate or format an answer."""
+        user_id = params.get("user_id") or permission.get("user_id")
+        department_id = params.get("department_id") or permission.get("department_id")
         search_results = await self.retriever.search(
             query=query,
-            user_id=params.get("user_id"),
-            department_id=params.get("department_id"),
+            user_id=user_id,
+            department_id=department_id,
             base_id=params.get("base_id"),
-            top_k=5
+            top_k=5,
         )
-        
+
         if not search_results:
             return {
                 "answer": "抱歉，知识库中没有找到相关信息。",
                 "sql": None,
                 "citations": [],
                 "data": None,
-                "intent": "rag_query"
+                "intent": "rag_query",
             }
-        
-        # 2. 构建上下文
-        context = self._build_context(search_results)
-        
-        # 3. 生成回答
+
+        citations = self._build_citations(search_results)
+        if not settings.LLM_API_KEY:
+            return {
+                "answer": self._format_retrieved_answer(search_results),
+                "sql": None,
+                "citations": citations,
+                "data": {"chunks": search_results},
+                "intent": "rag_query",
+            }
+
         prompt = PromptTemplate.from_template(self.ANSWER_PROMPT)
-        chain = prompt | self.llm
-        
+        chain = prompt | self._get_llm()
         try:
             response = await chain.ainvoke({
                 "query": query,
-                "context": context
+                "context": self._build_context(search_results),
             })
-            
-            answer = response.content
-            
-            # 提取来源
-            citations = [
-                {
-                    "chunk_id": r.get("chunk_id"),
-                    "document_title": r.get("document_title"),
-                    "content": r.get("content", "")[:100] + "..."
-                }
-                for r in search_results
-            ]
-            
             return {
-                "answer": answer,
+                "answer": response.content,
                 "sql": None,
                 "citations": citations,
-                "data": None,
-                "intent": "rag_query"
+                "data": {"chunks": search_results},
+                "intent": "rag_query",
             }
-        except Exception as e:
+        except Exception as exc:
             return {
-                "answer": f"回答生成失败: {str(e)}",
+                "answer": f"回答生成失败: {exc}",
                 "sql": None,
-                "citations": [],
-                "data": None,
-                "intent": "rag_query"
+                "citations": citations,
+                "data": {"chunks": search_results},
+                "intent": "rag_query",
             }
-    
-    def _build_context(self, results: List[Dict]) -> str:
-        """构建检索上下文"""
+
+    def _build_context(self, results: List[Dict[str, Any]]) -> str:
         context_parts = []
-        
-        for i, result in enumerate(results, 1):
-            content = result.get("content", "")
-            title = result.get("document_title", "未知文档")
-            context_parts.append(f"[{i}] {title}:\n{content}")
-        
+        for index, result in enumerate(results, start=1):
+            title = result.get("title") or "未知文档"
+            content = result.get("content") or ""
+            context_parts.append(f"[{index}] {title}\n{content}")
         return "\n\n".join(context_parts)
+
+    def _format_retrieved_answer(self, results: List[Dict[str, Any]]) -> str:
+        lines = [f"已从知识库找到 {len(results)} 条相关内容："]
+        for index, result in enumerate(results[:5], start=1):
+            title = result.get("title") or "未知文档"
+            content = self._compact(result.get("content") or "", 180)
+            lines.append(f"{index}. {title}：{content}")
+        lines.append("当前未配置 LLM_API_KEY，以上为检索片段摘要。")
+        return "\n".join(lines)
+
+    def _build_citations(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [
+            {
+                "chunk_id": result.get("chunk_id"),
+                "document_id": result.get("document_id"),
+                "document_title": result.get("title"),
+                "score": result.get("score"),
+                "content": self._compact(result.get("content") or "", 120),
+            }
+            for result in results
+        ]
+
+    @staticmethod
+    def _compact(text: str, limit: int) -> str:
+        compacted = " ".join(text.split())
+        if len(compacted) <= limit:
+            return compacted
+        return compacted[:limit] + "..."

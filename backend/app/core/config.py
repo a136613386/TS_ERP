@@ -2,24 +2,38 @@
 应用配置管理
 """
 from typing import List
-from pydantic_settings import BaseSettings
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 
 
 class Settings(BaseSettings):
     """应用配置"""
+
+    model_config = SettingsConfigDict(
+        env_file=("../.env", ".env"),
+        case_sensitive=True,
+        extra="ignore",
+    )
     
     # 应用基础配置
     APP_NAME: str = "TS_ERP"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = False
+
+    @field_validator("DEBUG", mode="before")
+    @classmethod
+    def parse_debug(cls, value):
+        if isinstance(value, str) and value.lower() in {"release", "prod", "production"}:
+            return False
+        return value
     
     # 数据库配置
     DB_HOST: str = "localhost"
     DB_PORT: int = 3306
     DB_USER: str = "root"
-    DB_PASSWORD: str = "password"
-    DB_NAME: str = "ts_erp"
+    DB_PASSWORD: str = "123456"
+    DB_NAME: str = "erp_db"
     
     @property
     def DATABASE_URL(self) -> str:
@@ -39,8 +53,8 @@ class Settings(BaseSettings):
     # Elasticsearch 配置
     ES_HOST: str = "localhost"
     ES_PORT: int = 9200
-    ES_USER: str = "elastic"
-    ES_PASSWORD: str = "password"
+    ES_USER: str = ""
+    ES_PASSWORD: str = ""
     
     @property
     def ES_URL(self) -> str:
@@ -54,7 +68,11 @@ class Settings(BaseSettings):
     
     # Agent Service 配置
     AGENT_SERVICE_URL: str = "http://localhost:8001"
-    
+
+    # Java 后端 API
+    JAVA_BACKEND_URL: str = "http://localhost:8080"
+    JAVA_BACKEND_TIMEOUT: int = 30
+
     # CORS 配置
     CORS_ORIGINS: List[str] = ["http://localhost:5173", "http://localhost:3000"]
     
@@ -62,10 +80,6 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     LOG_ES_INDEX: str = "ts-erp-logs"
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
-
 
 @lru_cache()
 def get_settings() -> Settings:

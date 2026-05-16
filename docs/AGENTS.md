@@ -2,14 +2,22 @@
 
 ## 项目概述
 
-TS_ERP 是一个基于 FastAPI + Vue 3 + Agent Service 构建的 ERP 智能助手系统，采用代码化管理替代低代码节点编排。
+TS_ERP 是一个基于 Vue 3 + Spring Boot + Python Agent Service 构建的前后端分离 ERP 智能助手系统。系统按全新项目建设，不做旧系统数据迁移，数据模型和业务流程都按目标产品重新设计。
+
+项目由 3 个独立工程组成：
+
+- `frontend/`：Vue 3 前端
+- `java-backend/`：Spring Boot Java 应用后端
+- `agent_service/`：Python Agent / RAG 服务
+
+产品范围和功能优先级以 `docs/TS_ERP_Product_Requirements.md` 为主，三项目边界以 `docs/Three_Project_Structure.md` 为主，架构实现以 `docs/TS_ERP_Architecture_Plan.md` 和 `docs/Java_Backend_Plan.md` 为辅。
 
 ## 技术栈
 
 | 层级 | 技术 |
 |------|------|
 | 前端 | Vue 3 + TypeScript + Vite + Element Plus |
-| 后端 | FastAPI + Python + SQLAlchemy |
+| 主业务后端 | Spring Boot 3.x + Java |
 | 智能体 | Python Agent Service + LangChain |
 | 数据库 | MySQL 8.0 |
 | 缓存 | Redis 7.0 |
@@ -29,7 +37,7 @@ TS_ERP/
 │   │   └── assets/    # 静态资源
 │   └── package.json
 │
-├── backend/            # FastAPI 后端
+├── java-backend/       # Spring Boot 主业务后端
 │   ├── app/
 │   │   ├── api/       # API 路由
 │   │   ├── auth/      # 认证模块
@@ -61,18 +69,17 @@ TS_ERP/
 # 1. 启动基础设施
 docker-compose -f docker/docker-compose.yml up -d mysql redis elasticsearch
 
-# 2. 后端
-cd backend
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
-
-# 3. Agent Service
+# 2. Agent Service
 cd agent_service
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8001
 
-# 4. 前端
-cd frontend
+# 3. Java 后端
+cd ../java-backend
+mvn spring-boot:run -Dspring-boot.run.profiles=local
+
+# 4. Vue 前端
+cd ../frontend
 npm install
 npm run dev
 ```
@@ -86,7 +93,7 @@ docker-compose -f docker/docker-compose.yml up -d
 ## API 文档
 
 启动后访问：
-- 后端 API: http://localhost:8000/docs
+- Java 后端 API: http://localhost:8080/swagger-ui/index.html
 - Agent Service: http://localhost:8001/docs
 - Kibana: http://localhost:5601 (可选)
 
