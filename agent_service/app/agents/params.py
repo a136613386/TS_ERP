@@ -1,8 +1,8 @@
 """
-Parameter extraction for the ERP assistant.
+ERP 智能助手参数提取模块。
 
-Natural language should be normalized before template matching. For example,
-"查詢最近的3个客戶" and "查询最近的3个客户" should route the same way.
+自然语言在模板匹配前需要先做归一化。例如：
+“查詢最近的3个客戶”和“查询最近的3个客户”应该进入同一条查询链路。
 """
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
@@ -10,7 +10,7 @@ import re
 
 
 class ParameterExtractor:
-    """Extract template IDs and lightweight entities from user questions."""
+    """从用户问题中提取模板编号和轻量实体。"""
 
     TRADITIONAL_TRANSLATION = str.maketrans({
         "詢": "询",
@@ -88,7 +88,7 @@ class ParameterExtractor:
     LIST_QUESTION_WORDS = ["有哪些", "有那些", "列表", "所有", "全部", "查看", "查询", "最近", "最新", "前"]
 
     async def extract(self, query: str, intent: str, session_id: str) -> Dict[str, Any]:
-        """Extract parameters from one user query."""
+        """从单轮用户问题中提取参数。"""
         normalized_query = self._normalize_query(query)
         params: Dict[str, Any] = {
             "query": query,
@@ -109,7 +109,7 @@ class ParameterExtractor:
         return params
 
     def _match_template(self, normalized_query: str) -> Optional[str]:
-        """Match high-frequency templates with deterministic rules."""
+        """使用确定性规则匹配高频查询模板。"""
         clean_query = self._clean_query(normalized_query)
 
         if "客户" in clean_query and any(word in clean_query for word in self.LIST_QUESTION_WORDS):
@@ -125,7 +125,7 @@ class ParameterExtractor:
         return None
 
     def _extract_time_params(self, query: str) -> Dict[str, Any]:
-        """Extract simple date ranges."""
+        """提取简单日期范围。"""
         params: Dict[str, Any] = {}
 
         if "今天" in query:
@@ -149,7 +149,7 @@ class ParameterExtractor:
         return params
 
     def _extract_limit_params(self, query: str) -> Dict[str, Any]:
-        """Extract result count from phrases like 最近的3个客户."""
+        """从“最近的3个客户”这类表达中提取返回数量。"""
         match = re.search(r"(?:最近|前|最新)?的?\s*(\d+)\s*(?:个|条|笔)", query)
         if not match:
             return {}
@@ -157,7 +157,7 @@ class ParameterExtractor:
         return {"limit": limit}
 
     def _extract_entities(self, query: str, template_id: Optional[str]) -> Dict[str, Any]:
-        """Extract entities only when the matched template needs them."""
+        """只在模板需要实体时提取实体参数。"""
         params: Dict[str, Any] = {}
 
         if template_id in {"customer_detail", "customer_orders"}:
@@ -172,7 +172,7 @@ class ParameterExtractor:
         return params
 
     def _extract_customer_name(self, query: str) -> Optional[str]:
-        """Extract a customer name without treating list questions as names."""
+        """提取客户名称，并避免把列表类问题误识别成客户名。"""
         clean_query = self._clean_query(query)
         if any(word in clean_query for word in self.LIST_QUESTION_WORDS):
             return None
@@ -190,7 +190,7 @@ class ParameterExtractor:
         return None
 
     def _check_needs_clarification(self, params: Dict[str, Any], intent: str) -> bool:
-        """Check whether required params are missing."""
+        """检查是否缺少必要参数。"""
         if intent == "fixed_query" and params.get("template_id"):
             template = self.TEMPLATES.get(params["template_id"])
             if template:
@@ -198,7 +198,7 @@ class ParameterExtractor:
         return False
 
     def _generate_clarification_message(self, params: Dict[str, Any]) -> str:
-        """Generate a short clarification question."""
+        """生成简短澄清问题。"""
         if params.get("template_id") == "customer_orders":
             return "请问您想查看哪个客户的订单？"
         if params.get("template_id") == "customer_detail":

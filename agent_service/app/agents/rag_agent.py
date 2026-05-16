@@ -1,5 +1,5 @@
 """
-RAG Agent for knowledge-base question answering.
+知识库问答 RAG Agent。
 """
 from typing import Any, Dict, List
 
@@ -11,7 +11,7 @@ from app.rag.retriever import RAGRetriever
 
 
 class RAGAgent:
-    """Answer questions with retrieved knowledge chunks."""
+    """基于检索到的知识片段回答用户问题。"""
 
     ANSWER_PROMPT = """
 你是一个 ERP 知识库助手，请严格根据检索到的知识片段回答用户问题。
@@ -47,7 +47,7 @@ class RAGAgent:
         params: Dict[str, Any],
         permission: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Retrieve knowledge chunks and generate or format an answer."""
+        """检索知识片段，并生成或格式化回答。"""
         user_id = params.get("user_id") or permission.get("user_id")
         department_id = params.get("department_id") or permission.get("department_id")
         search_results = await self.retriever.search(

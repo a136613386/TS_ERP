@@ -1,10 +1,9 @@
 """
-Intent recognition for the ERP assistant.
+ERP 智能助手意图识别模块。
 
-Deterministic ERP rules are applied before the LLM so high-frequency questions
-route predictably. In particular, inventory shortage can mean either "query the
-current shortage list" or "explain the handling process", so the wording must
-be distinguished.
+高频、稳定的问题优先使用本地确定性规则，避免每次都依赖大模型。
+例如“库存不足”既可能是查询当前低库存商品，也可能是询问处理流程，
+所以这里需要先根据表达方式做明确区分。
 """
 from typing import Any, Dict, List
 import json
@@ -21,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class IntentRecognizer:
-    """Route user questions to SQL, RAG, mixed, or dynamic query handling."""
+    """将用户问题路由到 SQL、RAG、混合查询或动态查询。"""
 
     INTENT_PROMPT = """
 你是一个 ERP 智能助手，需要根据用户问题判断查询意图。
@@ -62,7 +61,7 @@ class IntentRecognizer:
         return self.llm
 
     async def recognize(self, query: str) -> Dict[str, Any]:
-        """Recognize user intent, with deterministic ERP shortcuts first."""
+        """识别用户意图；优先使用 ERP 本地规则。"""
         normalized_query = self._normalize_query(query)
         rule_result = self._recognize_by_rules(normalized_query)
         if rule_result:
@@ -81,12 +80,12 @@ class IntentRecognizer:
                 result = json.loads(json_match.group())
                 return self._normalize_result(result, normalized_query)
         except Exception as exc:
-            logger.warning("Intent recognition failed: %s", exc)
+            logger.warning("意图识别调用失败：%s", exc)
 
         return self._fallback_recognize(normalized_query)
 
     def _fallback_recognize(self, query: str) -> Dict[str, Any]:
-        """Keyword-based fallback when the LLM is not configured or fails."""
+        """LLM 未配置或调用失败时，使用本地语义规则兜底。"""
         normalized = self._normalize_query(query)
         rule_result = self._recognize_by_rules(normalized)
         if rule_result:

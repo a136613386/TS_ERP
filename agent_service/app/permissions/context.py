@@ -15,7 +15,7 @@ class PermissionContext:
         """
         获取用户权限上下文
         """
-        # TODO: 从数据库/缓存获取真实权限
+        # 待办：后续从数据库或缓存获取真实权限
         # 这里返回模拟数据
         return {
             "user_id": user_id,
@@ -23,7 +23,7 @@ class PermissionContext:
             "roles": ["sales", "manager"],
             "modules": ["customer", "order", "inventory", "finance", "knowledge"],
             "data_scope": {
-                "type": "department",  # department / all / self
+                "type": "department",  # 部门 / 全部 / 本人
                 "department_ids": [department_id] if department_id else [1]
             }
         }

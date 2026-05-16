@@ -1,4 +1,4 @@
-"""RAG retrieval module with BM25 + vector recall and Python-side RRF."""
+"""RAG 检索模块：BM25 + 向量召回 + Python 侧 RRF 融合。"""
 import hashlib
 import logging
 import math
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class RAGRetriever:
-    """Retrieve knowledge chunks from Elasticsearch."""
+    """从 Elasticsearch 中检索知识片段。"""
 
     INDEX_NAME = "knowledge_chunk_index"
     RRF_K = 60
@@ -32,7 +32,7 @@ class RAGRetriever:
         base_id: Optional[int] = None,
         top_k: int = 5,
     ) -> List[Dict[str, Any]]:
-        """Search public or authorized chunks with BM25 + vector recall."""
+        """使用 BM25 和向量召回检索公开或已授权的知识片段。"""
         search_query = self._rewrite_query(query)
         permission_values = self._permission_values(user_id, department_id)
         filter_clauses: List[Dict[str, Any]] = [
@@ -88,7 +88,7 @@ class RAGRetriever:
             response = self.es.search(index=self.INDEX_NAME, body=search_body)
             hits = response.get("hits", {}).get("hits", [])
             logger.info(
-                "RAG BM25 search",
+                "RAG BM25 检索完成",
                 extra={
                     "query": query,
                     "rewritten_query": search_query,
@@ -99,7 +99,7 @@ class RAGRetriever:
             )
             return [self._hit_to_result(hit, "bm25") for hit in hits]
         except Exception as exc:
-            logger.warning("RAG BM25 search failed: %s", exc)
+            logger.warning("RAG BM25 检索失败：%s", exc)
             return []
 
     async def _vector_search(
@@ -134,10 +134,10 @@ class RAGRetriever:
         try:
             response = self.es.search(index=self.INDEX_NAME, body=search_body)
             hits = response.get("hits", {}).get("hits", [])
-            logger.info("RAG vector search query=%s hit_count=%s", query, len(hits))
+            logger.info("RAG 向量检索完成，query=%s，命中数=%s", query, len(hits))
             return [self._hit_to_result(hit, "vector") for hit in hits]
         except Exception as exc:
-            logger.warning("RAG vector search skipped: %s", exc)
+            logger.warning("RAG 向量检索已跳过：%s", exc)
             return []
 
     def _hit_to_result(self, hit: Dict[str, Any], source_type: str) -> Dict[str, Any]:
@@ -175,7 +175,7 @@ class RAGRetriever:
             item["retrieval_source"] = "+".join(sorted(sources.get(chunk_id, set())))
             final_results.append(item)
             logger.info(
-                "RAG merged hit rrf_score=%s source=%s chunk_id=%s title=%s preview=%s",
+                "RAG 融合命中，rrf_score=%s，来源=%s，chunk_id=%s，标题=%s，预览=%s",
                 item["rrf_score"],
                 item["retrieval_source"],
                 item.get("chunk_id"),
@@ -185,7 +185,7 @@ class RAGRetriever:
         return final_results
 
     def _permission_values(self, user_id: Optional[int], department_id: Optional[int]) -> List[str]:
-        """Return any allowed permission scope, not an all-must-match filter."""
+        """返回任一可访问的权限范围，而不是要求所有权限同时满足。"""
         values = ["public"]
         if department_id:
             values.append(f"dept_{department_id}")
@@ -194,7 +194,7 @@ class RAGRetriever:
         return values
 
     def _rewrite_query(self, query: str) -> str:
-        """Add lightweight ERP synonyms for short Chinese queries."""
+        """为较短的中文问题补充轻量 ERP 同义词。"""
         terms = [query]
         normalized = (query or "").strip()
         if "ERP" in normalized.upper():

@@ -1,8 +1,8 @@
 """
-SQL Agent for deterministic ERP data queries.
+ERP 数据查询 SQL Agent。
 
-Fixed templates are used for high-frequency ERP questions. They return both
-machine-readable rows and a concise natural-language answer with key details.
+高频查询使用固定 SQL 模板，复杂但可控的查询使用安全动态 SQL。
+返回结果同时包含前端可渲染的结构化行数据，以及面向用户的简短中文回答。
 """
 from datetime import date, datetime
 from decimal import Decimal
@@ -14,7 +14,7 @@ from app.guards.sql_guard import SQLGuard
 
 
 class SQLAgent:
-    """Execute fixed SQL templates and guarded dynamic SQL."""
+    """执行固定 SQL 模板和经过安全校验的动态 SQL。"""
 
     TEMPLATE_SQL = {
         "customer_list": """
@@ -106,7 +106,7 @@ class SQLAgent:
         params: Dict[str, Any],
         permission: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Execute a trusted fixed SQL template."""
+        """执行可信的固定 SQL 模板。"""
         if not template_id or template_id not in self.TEMPLATE_SQL:
             return {
                 "answer": "抱歉，暂不支持该查询类型。",
@@ -137,7 +137,7 @@ class SQLAgent:
         params: Dict[str, Any],
         permission: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Generate and execute dynamic SQL after guard validation."""
+        """生成动态 SQL，并在安全校验通过后执行。"""
         local_sql = self._generate_local_dynamic_sql(query, params)
         if local_sql:
             return await self._execute_guarded_sql(local_sql, "dynamic_query")
@@ -203,7 +203,7 @@ class SQLAgent:
         }
 
     def _build_template_sql(self, template: str, params: Dict[str, Any]) -> str:
-        """Fill placeholders used by fixed SQL templates."""
+        """填充固定 SQL 模板中的占位符。"""
         sql = template
         sql = sql.replace("{customer_name}", self._escape_like(str(params.get("customer_name", ""))))
         sql = sql.replace("{limit}", str(self._safe_limit(params.get("limit", 20))))
@@ -242,7 +242,7 @@ class SQLAgent:
         }
 
     def _generate_local_dynamic_sql(self, query: str, params: Dict[str, Any]) -> str | None:
-        """Generate deterministic dynamic SQL for common ERP analysis questions."""
+        """为常见 ERP 分析问题生成确定性的动态 SQL。"""
         normalized = self._normalize_question(query)
         limit = self._safe_limit(params.get("limit", 20))
 
@@ -327,7 +327,7 @@ class SQLAgent:
         return None
 
     async def _execute_sql(self, sql: str) -> Dict[str, Any]:
-        """Execute SQL and normalize database values for JSON responses."""
+        """执行 SQL，并将数据库值转换为适合 JSON 返回的格式。"""
         import pymysql
 
         connection = None
@@ -356,7 +356,7 @@ class SQLAgent:
                 connection.close()
 
     def _format_data_answer(self, template_id: str, data: Dict[str, Any]) -> str:
-        """Format a concise answer; tabular details are rendered by the frontend."""
+        """格式化简短回答；表格明细由前端负责渲染。"""
         rows = data.get("rows", [])
         count = len(rows)
         if count == 0:

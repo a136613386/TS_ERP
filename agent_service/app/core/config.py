@@ -1,5 +1,5 @@
 """
-Agent Service 配置
+智能助手服务配置。
 """
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 class Settings(BaseSettings):
-    """Agent Service 配置"""
+    """智能助手服务配置项。"""
 
     model_config = SettingsConfigDict(
         env_file=(PROJECT_ROOT / ".env", ".env"),
@@ -46,18 +46,18 @@ class Settings(BaseSettings):
     def ES_URL(self) -> str:
         return f"http://{self.ES_HOST}:{self.ES_PORT}"
     
-    # DeepSeek / LLM 配置（兼容 OpenAI API）
+    # 大模型配置（兼容 OpenAI 协议）
     LLM_API_KEY: str = ""
     LLM_MODEL: str = "deepseek-chat"
     LLM_BASE_URL: str = "https://api.deepseek.com/v1"
     LLM_TEMPERATURE: float = 0.0
 
-    # RAG embedding
+    # 知识库向量模型配置
     # local_hash 用于本地快速联调；bge 使用 BAAI/bge-small-zh-v1.5。
     RAG_EMBEDDING_PROVIDER: str = "local_hash"
     RAG_VECTOR_DIMS: int = 512
 
-    # Java 后端 API
+    # Java 后端接口
     JAVA_BACKEND_URL: str = "http://localhost:8080"
     JAVA_BACKEND_TIMEOUT: int = 30
     

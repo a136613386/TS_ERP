@@ -62,7 +62,7 @@ class AgentCoordinator:
         intent_result = await self.intent_recognizer.recognize(query)
         intent = intent_result["intent"]
         rewritten_query = intent_result.get("rewrite_query") or query
-
+        print('1. 意图识别-->',rewritten_query)
         if intent_result.get("confidence", 1.0) < 0.5:
             result = {
                 "answer": "我还不能确定你想查业务数据还是问制度流程。可以补充一下对象或范围吗？例如：查询最近客户，或 库存不足怎么办。",
@@ -82,7 +82,7 @@ class AgentCoordinator:
             department_id=department_id
         )
 
-        logger.info("agent permission context user_id=%s department_id=%s", user_id, department_id)
+        logger.info("已获取智能助手权限上下文，user_id=%s，department_id=%s", user_id, department_id)
 
         # 3. 参数提取
         params = await self.param_extractor.extract(
@@ -94,12 +94,12 @@ class AgentCoordinator:
         params["intent_result"] = intent_result
         params["user_id"] = user_id
         params["department_id"] = department_id
-        logger.info("agent params intent=%s route_query=%s params=%s", intent, rewritten_query, params)
+        logger.info("智能助手参数提取完成，intent=%s，改写问题=%s，params=%s", intent, rewritten_query, params)
 
         if intent == "fixed_query" and not params.get("template_id"):
             intent = "dynamic_query"
             params["intent"] = intent
-            logger.info("fixed template not matched, fallback to dynamic_query")
+            logger.info("固定模板未命中，已降级到安全动态查询")
 
         # 4. 查询路由
         route = await self.query_router.route(
@@ -107,10 +107,10 @@ class AgentCoordinator:
             params=params,
             permission=permission
         )
-        logger.info("agent route=%s", route)
+        logger.info("智能助手查询路由=%s", route)
         # 5. 根据路由执行不同处理
-        # route 的值决定真正执行哪类 Agent：
-        # fixed/dynamic 走业务数据，rag 走知识库，mixed 同时查业务数据和知识库。
+        # 路由值决定真正执行哪类智能体：
+        # 固定查询和动态查询走业务数据，知识库查询走 RAG，混合查询同时查业务数据和知识库。
         result = {}
         
         if route == "fixed_query":
@@ -176,7 +176,7 @@ class AgentCoordinator:
         
         # 6. 格式化响应
         formatted = await self.response_formatter.format(result)
-        logger.info("agent response intent=%s answer_preview=%s", formatted.get("intent"), formatted.get("answer", "")[:80])
+        logger.info("智能助手响应完成，intent=%s，回答预览=%s", formatted.get("intent"), formatted.get("answer", "")[:80])
 
         # 7. 保存上下文
         await self.session_memory.save_context(
@@ -189,7 +189,7 @@ class AgentCoordinator:
         return formatted
 
     def _resolve_follow_up(self, query: str, history: list) -> Optional[Dict[str, Any]]:
-        """Resolve short follow-up questions from the previous turn."""
+        """根据上一轮上下文处理短追问。"""
         clean_query = "".join((query or "").split()).strip("？?。!！")
         if clean_query not in {"具体是哪一个", "具体是哪几个", "是哪一个", "是哪几个", "明细", "详情", "展开"}:
             return None

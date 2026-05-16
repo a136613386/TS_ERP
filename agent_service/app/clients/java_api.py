@@ -1,5 +1,5 @@
 """
-Java 后端 API 客户端
+Java 后端接口客户端
 负责与 Spring Boot Java 后端进行 HTTP 通信
 """
 from typing import Dict, Any, Optional, List
@@ -9,7 +9,7 @@ from app.core.config import settings
 
 
 class JavaApiClient:
-    """Java 后端 API 客户端"""
+    """Java 后端接口客户端。"""
 
     def __init__(self):
         self.base_url = settings.JAVA_BACKEND_URL.rstrip("/")
@@ -17,7 +17,7 @@ class JavaApiClient:
         self._token: Optional[str] = None
 
     def set_token(self, token: str):
-        """设置 JWT Token"""
+        """设置 JWT 令牌。"""
         self._token = token
 
     def _get_headers(self) -> Dict[str, str]:
@@ -76,7 +76,7 @@ class JavaApiClient:
     # ── 认证 ──────────────────────────────────
 
     async def login(self, username: str, password: str) -> Dict[str, Any]:
-        """登录获取 Token"""
+        """登录并获取访问令牌。"""
         return await self._request("POST", "/api/auth/login", json_data={
             "username": username,
             "password": password,
